@@ -1,0 +1,19 @@
+server:
+  public:
+    port: 8080
+    upload_dir: "./uploads"
+  admin:
+    port: 8081
+    jwt_secret: "your-secret-key"
+    password: "Moranis.Zs"
+
+database:
+  mysql:
+    host: "101.200.158.94"
+    port: 3306
+    user: "root"
+    password: "AaZz@123456"
+    dbname: "servermanager"
+    charset: "utf8mb4"
+    parse_time: true
+    loc: "Asia/Shanghai" 
