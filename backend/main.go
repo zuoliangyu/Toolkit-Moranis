@@ -38,6 +38,8 @@ func main() {
 	{
 		publicAPI.GET("/materials", publicHandler.GetMaterials)
 		publicAPI.GET("/materials/:id/download", publicHandler.DownloadMaterial)
+		publicAPI.GET("/folders", publicHandler.GetFolders)
+		publicAPI.GET("/folders/:id/materials", publicHandler.GetFolderMaterials)
 	}
 
 	// 创建管理员服务器
@@ -61,6 +63,10 @@ func main() {
 		{
 			adminAuth.POST("/materials", adminHandler.UploadMaterial)
 			adminAuth.DELETE("/materials/:id", adminHandler.DeleteMaterial)
+			adminAuth.GET("/folders", adminHandler.GetFolders)
+			adminAuth.POST("/folders", adminHandler.CreateFolder)
+			adminAuth.PUT("/folders/:id", adminHandler.UpdateFolder)
+			adminAuth.DELETE("/folders/:id", adminHandler.DeleteFolder)
 		}
 	}
 
