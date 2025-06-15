@@ -27,7 +27,7 @@ func InitDB() (*gorm.DB, error) {
 	}
 
 	// 自动迁移数据库结构
-	err = db.AutoMigrate(&models.Material{})
+	err = db.AutoMigrate(&models.Folder{}, &models.Material{})
 	if err != nil {
 		return nil, err
 	}

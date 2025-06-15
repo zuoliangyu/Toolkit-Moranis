@@ -13,8 +13,21 @@
             <a href="admin.html" class="admin-link">管理员入口</a>
         </header>
         <main>
-            <div class="materials-list" id="materialsList">
-                <!-- 资料列表将通过JavaScript动态加载 -->
+            <div class="content-layout">
+                <aside class="folder-sidebar">
+                    <h3>文件夹</h3>
+                    <div class="folder-tree" id="folderTree">
+                        <!-- 文件夹树将通过JavaScript动态加载 -->
+                    </div>
+                </aside>
+                <section class="materials-section">
+                    <div class="materials-header">
+                        <h3 id="currentFolderName">所有资料</h3>
+                    </div>
+                    <div class="materials-list" id="materialsList">
+                        <!-- 资料列表将通过JavaScript动态加载 -->
+                    </div>
+                </section>
             </div>
         </main>
     </div>

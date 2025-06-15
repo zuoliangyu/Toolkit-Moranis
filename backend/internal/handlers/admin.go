@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"servermanager/internal/config"
 	"servermanager/internal/models"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -130,4 +132,247 @@ func (h *AdminHandler) DeleteMaterial(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+}
+
+// 获取文件夹树形结构
+func (h *AdminHandler) GetFolders(c *gin.Context) {
+	var folders []models.Folder
+	if err := h.db.Preload("Children").Where("parent_id IS NULL").Find(&folders).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取文件夹列表失败"})
+		return
+	}
+	c.JSON(http.StatusOK, folders)
+}
+
+// 创建文件夹
+func (h *AdminHandler) CreateFolder(c *gin.Context) {
+	var folderData struct {
+		Name        string `json:"name" binding:"required"`
+		ParentID    *uint  `json:"parent_id"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&folderData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求数据"})
+		return
+	}
+
+	// 验证文件夹名称
+	if strings.TrimSpace(folderData.Name) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "文件夹名称不能为空"})
+		return
+	}
+
+	folder := models.Folder{
+		Name:        strings.TrimSpace(folderData.Name),
+		ParentID:    folderData.ParentID,
+		Description: folderData.Description,
+		Level:       0,
+		FolderPath:  folderData.Name,
+	}
+
+	// 如果有父文件夹，验证层级和计算路径
+	if folderData.ParentID != nil {
+		var parentFolder models.Folder
+		if err := h.db.First(&parentFolder, *folderData.ParentID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "父文件夹不存在"})
+			return
+		}
+
+		// 检查层级限制
+		if parentFolder.Level >= 99 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "文件夹层级不能超过99层"})
+			return
+		}
+
+		folder.Level = parentFolder.Level + 1
+		folder.FolderPath = parentFolder.FolderPath + "/" + folder.Name
+	}
+
+	// 检查同级文件夹名称是否重复
+	var existingFolder models.Folder
+	query := h.db.Where("name = ?", folder.Name)
+	if folder.ParentID != nil {
+		query = query.Where("parent_id = ?", *folder.ParentID)
+	} else {
+		query = query.Where("parent_id IS NULL")
+	}
+
+	if err := query.First(&existingFolder).Error; err == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "同级目录下已存在同名文件夹"})
+		return
+	}
+
+	if err := h.db.Create(&folder).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建文件夹失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, folder)
+}
+
+// 重命名文件夹
+func (h *AdminHandler) UpdateFolder(c *gin.Context) {
+	id := c.Param("id")
+	folderID, err := strconv.ParseUint(id, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文件夹ID"})
+		return
+	}
+
+	var updateData struct {
+		Name        string `json:"name" binding:"required"`
+		Description string `json:"description"`
+	}
+
+	if err := c.ShouldBindJSON(&updateData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的请求数据"})
+		return
+	}
+
+	// 验证文件夹名称
+	newName := strings.TrimSpace(updateData.Name)
+	if newName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "文件夹名称不能为空"})
+		return
+	}
+
+	var folder models.Folder
+	if err := h.db.First(&folder, uint(folderID)).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "文件夹不存在"})
+		return
+	}
+
+	// 检查同级文件夹名称是否重复
+	if folder.Name != newName {
+		var existingFolder models.Folder
+		query := h.db.Where("name = ? AND id != ?", newName, folder.ID)
+		if folder.ParentID != nil {
+			query = query.Where("parent_id = ?", *folder.ParentID)
+		} else {
+			query = query.Where("parent_id IS NULL")
+		}
+
+		if err := query.First(&existingFolder).Error; err == nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "同级目录下已存在同名文件夹"})
+			return
+		}
+	}
+
+	oldPath := folder.FolderPath
+	oldName := folder.Name
+
+	// 更新文件夹信息
+	folder.Name = newName
+	folder.Description = updateData.Description
+
+	// 重新计算路径
+	if folder.ParentID != nil {
+		var parentFolder models.Folder
+		if err := h.db.First(&parentFolder, *folder.ParentID).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "父文件夹不存在"})
+			return
+		}
+		folder.FolderPath = parentFolder.FolderPath + "/" + newName
+	} else {
+		folder.FolderPath = newName
+	}
+
+	// 开始事务
+	tx := h.db.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// 更新当前文件夹
+	if err := tx.Save(&folder).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新文件夹失败"})
+		return
+	}
+
+	// 如果名称发生变化，需要更新所有子文件夹的路径
+	if oldName != newName {
+		if err := h.updateChildrenPaths(tx, folder.ID, oldPath, folder.FolderPath); err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "更新子文件夹路径失败"})
+			return
+		}
+	}
+
+	tx.Commit()
+	c.JSON(http.StatusOK, folder)
+}
+
+// 删除文件夹
+func (h *AdminHandler) DeleteFolder(c *gin.Context) {
+	id := c.Param("id")
+	folderID, err := strconv.ParseUint(id, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文件夹ID"})
+		return
+	}
+
+	var folder models.Folder
+	if err := h.db.First(&folder, uint(folderID)).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "文件夹不存在"})
+		return
+	}
+
+	// 检查是否有子文件夹
+	var childCount int64
+	if err := h.db.Model(&models.Folder{}).Where("parent_id = ?", folder.ID).Count(&childCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "检查子文件夹失败"})
+		return
+	}
+
+	if childCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "文件夹不为空，请先删除子文件夹"})
+		return
+	}
+
+	// 检查是否有资料文件
+	var materialCount int64
+	if err := h.db.Model(&models.Material{}).Where("folder_id = ?", folder.ID).Count(&materialCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "检查资料文件失败"})
+		return
+	}
+
+	if materialCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "文件夹不为空，请先删除或移动其中的资料文件"})
+		return
+	}
+
+	// 删除文件夹
+	if err := h.db.Delete(&folder).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除文件夹失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "删除成功"})
+}
+
+// 辅助函数：递归更新子文件夹路径
+func (h *AdminHandler) updateChildrenPaths(tx *gorm.DB, parentID uint, oldParentPath, newParentPath string) error {
+	var children []models.Folder
+	if err := tx.Where("parent_id = ?", parentID).Find(&children).Error; err != nil {
+		return err
+	}
+
+	for _, child := range children {
+		// 更新子文件夹路径
+		newChildPath := strings.Replace(child.FolderPath, oldParentPath, newParentPath, 1)
+		if err := tx.Model(&child).Update("folder_path", newChildPath).Error; err != nil {
+			return err
+		}
+
+		// 递归更新子文件夹的子文件夹
+		if err := h.updateChildrenPaths(tx, child.ID, child.FolderPath, newChildPath); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
